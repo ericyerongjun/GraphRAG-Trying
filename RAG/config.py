@@ -12,11 +12,21 @@ class GraphRAGConfig:
 
     data_dir: Path
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_backend: str = "sentence-transformers"
     chunk_size: int = 500
     chunk_overlap: int = 100
     min_token_length: int = 3
     max_keywords: int = 12
     device: Optional[str] = None
+    index_backend: str = "memory"  # "memory" or "faiss"
+    artifacts_namespace: str = "default"
+    reranker_model: Optional[str] = None
+    reranker_backend: str = "sentence-transformers"
+    processes: int = 1
+    batch_size: int = 1024
+    edge_weight_threshold: int = 2
+    huggingface_token: Optional[str] = None
+    huggingface_trust_remote_code: bool = False
     stop_words: Sequence[str] = field(
         default_factory=lambda: (
             "a",
