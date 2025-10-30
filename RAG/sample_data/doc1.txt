@@ -1,2 +1,0 @@
-GraphRAG is a retrieval augmented generation pipeline that builds a knowledge graph from documents.
-It can combine graph traversal with large language models to answer complex questions.
