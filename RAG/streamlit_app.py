@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
 from dataclasses import asdict
 from typing import Any, Dict, List, Sequence
@@ -25,10 +25,10 @@ from networkx.readwrite import json_graph
 
 try:  # Support package-relative imports when deployed as a module
     from .GraphRAG import GraphRAG
-    from .analytics import corpus_statistics, graph_statistics
+    from .analytics import corpus_statistics, document_statistics, graph_statistics
     from .config import GraphRAGConfig
     from .mindmap import MindMapBuilder
-    from .pattern_mining import frequent_terms
+    from .pattern_mining import frequent_terms, top_co_occurrences
     from .qa_pipeline import (
         AnswerGenerator,
         AnthropicClient,
@@ -40,10 +40,10 @@ try:  # Support package-relative imports when deployed as a module
     from .retrieval import GraphRetriever
 except ImportError:  # pragma: no cover - fallback for direct execution
     from GraphRAG import GraphRAG
-    from analytics import corpus_statistics, graph_statistics
+    from analytics import corpus_statistics, document_statistics, graph_statistics
     from config import GraphRAGConfig
     from mindmap import MindMapBuilder
-    from pattern_mining import frequent_terms
+    from pattern_mining import frequent_terms, top_co_occurrences
     from qa_pipeline import (
         AnswerGenerator,
         AnthropicClient,
@@ -128,12 +128,29 @@ def compute_analytics(rag: GraphRAG, min_doc_frequency: int, top_k_terms: int) -
     corpus_stats = asdict(corpus_statistics(chunks)) if chunks else {}
     graph_stats_summary = graph_statistics(rag.graph) if rag.graph is not None else {}
     frequent = (
-        frequent_terms(chunks, min_doc_frequency=min_doc_frequency, top_k=top_k_terms) if chunks else []
+        [asdict(pattern) for pattern in frequent_terms(chunks, min_doc_frequency=min_doc_frequency, top_k=top_k_terms)]
+        if chunks
+        else []
+    )
+    documents = [asdict(stat) for stat in document_statistics(chunks)] if chunks else []
+    co_occurrences = (
+        [
+            asdict(pattern)
+            for pattern in top_co_occurrences(
+                chunks,
+                min_frequency=max(2, min_doc_frequency),
+                top_k=min(50, max(top_k_terms, 10)),
+            )
+        ]
+        if chunks
+        else []
     )
     return {
         "corpus": corpus_stats,
         "graph": graph_stats_summary,
         "frequent_terms": frequent,
+        "documents": documents,
+        "co_occurrences": co_occurrences,
     }
 
 
@@ -299,9 +316,17 @@ def _mindmap_treemap_data(node: dict[str, Any], parent: str | None = None):
     values: List[int] = []
 
     def _walk(current: dict[str, Any], parent_name: str | None) -> None:
-        name = current.get("name", "(unnamed)")
-        chunks = current.get("chunks", []) or []
-        value = max(len(chunks), 1)
+        metadata = current.get("metadata") or {}
+        name = current.get("label") or current.get("name") or "(unnamed)"
+        if "chunk_count" in metadata:
+            value = max(int(metadata["chunk_count"]), 1)
+        elif "neighbor_count" in metadata:
+            value = max(int(metadata["neighbor_count"]), 1)
+        elif "omitted" in metadata:
+            value = max(int(metadata["omitted"]), 1)
+        else:
+            children = current.get("children") or []
+            value = max(len(children), 1)
         labels.append(name)
         parents.append(parent_name or "")
         values.append(value)
@@ -344,10 +369,10 @@ def _top_degree_table(graph: nx.Graph, limit: int = 20) -> List[dict[str, Any]]:
 
 
 def _graph_download_payloads(graph: nx.Graph) -> dict[str, tuple[str, str]]:
-    node_link_json = json.dumps(json_graph.node_link_data(graph), indent=2)
-    buffer = StringIO()
+    node_link_json = json.dumps(json_graph.node_link_data(graph, edges="links"), indent=2)
+    buffer = BytesIO()
     nx.write_gexf(graph, buffer)
-    gexf_data = buffer.getvalue()
+    gexf_data = buffer.getvalue().decode("utf-8")
     return {
         "knowledge_graph.json": (node_link_json, "application/json"),
         "knowledge_graph.gexf": (gexf_data, "application/xml"),
@@ -667,7 +692,7 @@ def main() -> None:
                 }
                 for chunk in list(rag.chunks.values())[:chunk_limit]
             ]
-            st.dataframe(preview, use_container_width=True)
+            st.dataframe(preview, width="stretch")
 
     with graph_tab:
         st.subheader("Knowledge graph")
@@ -678,9 +703,9 @@ def main() -> None:
             if graph.number_of_nodes() > 200:
                 st.caption("Showing the first 200 nodes for readability.")
             fig = _build_graph_figure(graph)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.markdown("**Top-degree nodes**")
-            st.dataframe(_top_degree_table(graph), use_container_width=True)
+            st.dataframe(_top_degree_table(graph), width="stretch")
             selected_node = st.text_input(
                 "Inspect node",
                 value=st.session_state.get("selected_graph_node", ""),
@@ -705,7 +730,7 @@ def main() -> None:
                         )
                     if neighbor_rows:
                         st.markdown(f"**Neighbors of {selected_node}**")
-                        st.dataframe(neighbor_rows, use_container_width=True)
+                        st.dataframe(neighbor_rows, width="stretch")
                     else:
                         st.info("Selected node has no neighbors.")
                 else:
@@ -717,7 +742,7 @@ def main() -> None:
                     data=payload,
                     file_name=filename,
                     mime=mime,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
     with mindmap_tab:
@@ -752,18 +777,18 @@ def main() -> None:
                         data=mindmap_text,
                         file_name="mindmap.md",
                         mime="text/markdown",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 with map_cols[1]:
                     st.markdown("### Hierarchy view")
                     mindmap_fig = build_mindmap_figure(mindmap_dict)
-                    st.plotly_chart(mindmap_fig, use_container_width=True)
+                    st.plotly_chart(mindmap_fig, width="stretch")
                     st.download_button(
                         label="Download mind map JSON",
                         data=json.dumps(mindmap_dict, indent=2),
                         file_name="mindmap.json",
                         mime="application/json",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 with st.expander("Mind map as JSON", expanded=False):
                     st.json(mindmap_dict)
@@ -784,6 +809,8 @@ def main() -> None:
             corpus_stats = analytics.get("corpus") or {}
             graph_stats_details = analytics.get("graph") or {}
             frequent = analytics.get("frequent_terms") or []
+            documents = analytics.get("documents") or []
+            co_occurrences = analytics.get("co_occurrences") or []
             col_left, col_right = st.columns(2)
             with col_left:
                 st.markdown("**Corpus statistics**")
@@ -793,23 +820,68 @@ def main() -> None:
                     st.caption("No corpus statistics available.")
                 st.markdown("**Graph statistics**")
                 if graph_stats_details:
-                    st.json(graph_stats_details)
+                    numeric_graph_stats = {
+                        key: value
+                        for key, value in graph_stats_details.items()
+                        if isinstance(value, (int, float)) or value is None
+                    }
+                    if numeric_graph_stats:
+                        st.json(numeric_graph_stats)
+                    top_degree_nodes = graph_stats_details.get("top_degree_nodes") or []
+                    if top_degree_nodes:
+                        st.markdown("Top degree nodes")
+                        st.dataframe(top_degree_nodes, width="stretch")
+                    degree_centrality = graph_stats_details.get("top_degree_centrality") or []
+                    if degree_centrality:
+                        st.markdown("Top degree centrality")
+                        st.dataframe(degree_centrality, width="stretch")
+                    betweenness_centrality = graph_stats_details.get("top_betweenness_centrality") or []
+                    if betweenness_centrality:
+                        st.markdown("Top betweenness centrality")
+                        st.dataframe(betweenness_centrality, width="stretch")
                 else:
                     st.caption("Graph statistics unavailable.")
+                st.markdown("**Document summary**")
+                if documents:
+                    document_table = [
+                        {
+                            "Document": item.get("doc_id"),
+                            "Chunks": item.get("chunk_count"),
+                            "Tokens": item.get("total_tokens"),
+                            "Avg tokens / chunk": round(float(item.get("average_chunk_tokens", 0.0)), 2),
+                        }
+                        for item in documents[:20]
+                    ]
+                    st.dataframe(document_table, width="stretch")
+                else:
+                    st.caption("Document summaries unavailable.")
             with col_right:
                 st.markdown("**Frequent terms**")
                 if frequent:
                     freq_table = [
                         {
-                            "Term": pattern.term,
-                            "Frequency": pattern.frequency,
-                            "Documents": pattern.document_frequency,
+                            "Term": pattern.get("term"),
+                            "Frequency": pattern.get("frequency"),
+                            "Documents": pattern.get("document_frequency"),
                         }
                         for pattern in frequent
                     ]
-                    st.dataframe(freq_table, use_container_width=True)
+                    st.dataframe(freq_table, width="stretch")
                 else:
                     st.caption("No frequent terms met the document frequency threshold.")
+                st.markdown("**Term co-occurrences**")
+                if co_occurrences:
+                    co_occurrence_table = [
+                        {
+                            "Term A": pattern.get("term_a"),
+                            "Term B": pattern.get("term_b"),
+                            "Frequency": pattern.get("frequency"),
+                        }
+                        for pattern in co_occurrences[:25]
+                    ]
+                    st.dataframe(co_occurrence_table, width="stretch")
+                else:
+                    st.caption("No co-occurrence pairs exceeded the frequency threshold.")
 
     question = st.text_input("Ask a question about your documents")
     if st.button("Run retrieval", disabled=not question):

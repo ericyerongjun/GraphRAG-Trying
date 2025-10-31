@@ -15,6 +15,13 @@ class TermPattern:
     document_frequency: int
 
 
+@dataclass(slots=True)
+class CoOccurrencePattern:
+    term_a: str
+    term_b: str
+    frequency: int
+
+
 def frequent_terms(chunks: Sequence[Chunk], min_doc_frequency: int = 5, top_k: int = 50) -> List[TermPattern]:
     term_counts: Counter[str] = Counter()
     doc_frequency: Dict[str, int] = defaultdict(int)
@@ -44,3 +51,25 @@ def co_occurrence(chunk: Chunk, window: int = 5) -> Dict[tuple[str, str], int]:
             pair = tuple(sorted((token, other)))
             counts[pair] += 1
     return counts
+
+
+def top_co_occurrences(
+    chunks: Sequence[Chunk],
+    *,
+    min_frequency: int = 3,
+    top_k: int = 25,
+    window: int = 5,
+) -> List[CoOccurrencePattern]:
+    aggregate: Dict[tuple[str, str], int] = defaultdict(int)
+    for chunk in chunks:
+        for pair, count in co_occurrence(chunk, window=window).items():
+            aggregate[pair] += count
+    ranked = sorted(aggregate.items(), key=lambda item: item[1], reverse=True)
+    patterns: List[CoOccurrencePattern] = []
+    for (term_a, term_b), frequency in ranked:
+        if frequency < min_frequency:
+            continue
+        patterns.append(CoOccurrencePattern(term_a=term_a, term_b=term_b, frequency=frequency))
+        if len(patterns) >= top_k:
+            break
+    return patterns
